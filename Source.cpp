@@ -4,6 +4,7 @@
 #include <iostream>
 #include <algorithm>
 #include <execution>
+#include <ppl.h>
 #include <vector>
 #include <map>
 #include <stack>
@@ -48,11 +49,14 @@ struct raytracing_traits {
 
 	struct intersect_result_type {
 		math::geometry::ray<vector3> ray;
+		size_t prev_element; 
+		const math::physics::raytracing::primitive<raytracing_traits>* prev_primitive;
+		const void* prev_object;
 		scalar distance; 
 		size_t element; 
 		const math::physics::raytracing::primitive<raytracing_traits>* primitive;
 		const void* object;
-		math::geometry::flexibility<vector3> transformation;
+		math::geometry::flexibility<vector3> transformation = { vector3{1,0,0},vector3{0,1,0},vector3{0,0,1},vector3{0,0,0} };
 	};
 
 	struct interact_result_type { 
@@ -98,13 +102,15 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 		std::tie(width,height) = base::window().get_clientsize();
 		result = decltype(result)( mdsize_t<2>{width,height} );
 		finresult = decltype(finresult)( mdsize_t<2>{width,height} );
-		view   = decltype(view){ {1,0,0,0}, {0,5,-15} /* vector3{1,0,0},vector3{0,1,0},vector3{0,0,1}, vector3{0,15,-15}*/ };
+		view   = decltype(view){ {1,0,0,0}, {0,5,+15} /* vector3{1,0,0},vector3{0,1,0},vector3{0,0,1}, vector3{0,15,-15}*/ };
 		view.rotate({1,0,0},0.2f);
-		/*view.reposit({ 11.4307f,4.93676f,12.5719f });
-		view.redirect(2, { -0.622702f,-0.263185f,-0.736869f });*/
-		proj   = decltype(proj)( scalar(0.8f), scalar(0.8f) );
+		view.rotate({0,1,0},3.14f);
+		/*view.reposit({ -2.87875f,3.56124f,-3.08814f });
+		view.redirect(2, { 0.627537f,-0.562937f,0.537865f });*/
+		proj   = decltype(proj)( scalar(1.047), scalar(1.047) );
+		tonemap = tonemapper<spectrum>(1,1,0,0, {scalar(1.0/5.6508), scalar(4.590700/5.6508), scalar(0.060100/5.6508)});
 
-		it.subsample_count = 16;
+		it.subsample_count = 1;
 		it.sample_count = 16384;
 
 		sequences.resize(it.sample_count);
@@ -154,10 +160,10 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 		}
 
 		property_tree::json_string jsgltf;
-		std::string filefolder = "New Folder\\";
+		std::string filefolder = "New Folder(2)\\";
 		{
 			//std::ifstream fin("models/Lamborghini Centenario LP-770 Baby Blue SDC/source/LAMBORGHINI CENTENARIO INTERIOR SDCBB.gltf", std::ios::in|std::ios::binary);
-			std::ifstream fin(filefolder+"scene.gltf", std::ios::in|std::ios::binary);
+			std::ifstream fin(filefolder+"JapaneseCherryTwig.gltf", std::ios::in|std::ios::binary);
 			fin.seekg(0, std::ios::beg);
 			fin.seekg(0, std::ios::end);
 			std::string source(size_t(fin.tellg()), '\0');
@@ -185,16 +191,16 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 		Gold->roughness = {0.5f,0.5f,1.0f};
 		materials.insert_or_assign("Gold", Gold);
 
-		auto Silver = std::make_shared< math::physics::raytracing::conductor<raytracing_traits> >();
+		/*auto Silver = std::make_shared< math::physics::raytracing::conductor<raytracing_traits> >();
 		Silver->eta  = {0.041000f,0.059582f,0.050000f};
 		Silver->etak = {4.8025f,3.5974f,2.1035f};
 		Silver->roughness = {1.0f,1.0f,1.0f};
-		materials.insert_or_assign("Silver", Silver);
-		/*auto Silver = std::make_shared< math::raytracing::principle_brdf<raytracing_traits> >();
+		materials.insert_or_assign("Silver", Silver);*/
+		auto Silver = std::make_shared< math::physics::raytracing::principle_brdf<raytracing_traits> >();
 		Silver->color_factor  = {0.7f,0.7f,0.7f};
 		Silver->metallic_factor = 0.0f;
 		Silver->roughness_factor = {1.0f,1.0f,1.0f};
-		materials.insert_or_assign("Silver", Silver);*/
+		materials.insert_or_assign("Silver", Silver);
 		
 		auto Copper = std::make_shared< math::physics::raytracing::conductor<raytracing_traits> >();
 		Copper->eta  = {0.21258f,0.55135f,1.2878f};
@@ -222,7 +228,7 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 			
 				if (jsmaterial["pbrMetallicRoughness"].contains("baseColorFactor")) {
 					auto baseColorFactor = jsmaterial["pbrMetallicRoughness"]["baseColorFactor"];
-					material->color_factor = {baseColorFactor[0], baseColorFactor[1], baseColorFactor[2],1};
+					material->color_factor = {baseColorFactor[0], baseColorFactor[1], baseColorFactor[2],baseColorFactor[3]};
 				} else {
 					material->color_factor = {1,1,1,1};
 				}
@@ -291,9 +297,6 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 					}
 				}
 
-				material->attributes.insert(material->attributes.end(),
-					max(material->color_texture_index, material->metallic_and_roughness_texture_index)+1, {});
-
 				//if (jsmaterial["pbrMetallicRoughness"].contains("baseColorFactor")) {
 				//	auto baseColorFactor = jsmaterial["pbrMetallicRoughness"]["baseColorFactor"];
 				//	material->etak = {4.8025f,3.5974f,2.1035f};
@@ -308,12 +311,50 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 				material->metallic_factor = 1.0f;
 			}
 		
+			if (jsmaterial.contains("emissiveTexture")) {
+				auto jstexture = jsgltf["textures"][ jsmaterial["emissiveTexture"]["index"] ];
+				if (jstexture.contains("texCoord")) {
+					material->emissive_texture_index = jstexture["texCoord"];
+				}
+
+				auto jsimage = jsgltf["images"][ jstexture["source"] ];
+				if (jsimage.contains("bufferView")) {
+						
+				} else if (jsimage.contains("uri")) {
+					auto image = cv::imread(filefolder + std::string(jsimage["uri"]), cv::IMREAD_UNCHANGED);
+					assert(image.channels() == 3 || image.channels() == 4);
+					material->emissive_texture.resize(mdsize_t<2>{ size_t(image.cols), size_t(image.rows) });
+					if (image.channels() == 4) {
+						for (size_t k = 0, kend = material->emissive_texture.length(); k != kend; ++k) {
+							auto temp = image.at<cv::Vec4b>(int(k));
+							material->emissive_texture[k] = { float(temp[2])/255.0f,float(temp[1])/255.0f,float(temp[0])/255.0f };
+						}
+					} else if (image.channels() == 3) {
+						for (size_t k = 0, kend = material->emissive_texture.length(); k != kend; ++k) {
+							auto temp = image.at<cv::Vec3b>(int(k));
+							material->emissive_texture[k] = { float(temp[2])/255.0f,float(temp[1])/255.0f,float(temp[0])/255.0f };
+						}
+					} else {
+						abort();
+					}
+				}
+			}
+
+			if (jsmaterial.contains("emissiveFactor")) {
+				auto emissiveFactor = jsmaterial["emissiveFactor"];
+				material->emissive_factor = { emissiveFactor[0], emissiveFactor[1], emissiveFactor[2] };
+			}
+
 			if (jsmaterial.contains("doubleSided") && bool(jsmaterial["doubleSided"])) {
 				material->doublesided = true;
 			}
 
 			if (jsmaterial.contains("alphaMode") && std::string_view(jsmaterial["alphaMode"]) != "OPAQUE") {
 				material->opaque = false;
+			}
+
+			if (std::string_view(jsmaterial["name"]).starts_with("JapaneseCherryPetals")) {
+				material->translucent = true;
 			}
 
 			materials[jsmaterial["name"]] = material;
@@ -658,9 +699,9 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 		for (int i = 0; i <= 0; ++i) {
 			for (int j = 0; j <= 0; ++j) {
 				auto lightij = std::make_shared< math::physics::raytracing::point_light<raytracing_traits> >();
-				lightij->position  = /*{i*2.0f,5,j*2.0f}*/{5.0f,8.0f,0};
+				lightij->position  = /*{i*2.0f,5,j*2.0f}*/{0.0f,0.9f,1.0f};
 				lightij->color     = {1,1,1};
-				lightij->intensity = 500;
+				lightij->intensity = 10;
 				lightsources.push_back(lightij);
 			}
 		}
@@ -680,9 +721,9 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 				size_t xi = yi % result.size(0);
 				yi /= result.size(0);
 
-					if ( xi%4+(yi%4)*4 != it.subsample_index ) {
+				/*	if ( xi%4+(yi%4)*4 != it.subsample_index ) {
 						return;
-					}
+					}*/
 					if (it.sample_index == 0) {
 						result_i = {0,0,0};
 					}
@@ -701,7 +742,7 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 
 
 					raytracing_traits::interact_result_type the_interact_result{ .radiance = {0,0,0}, .transmittance = {1,1,1} };
-					raytracing_traits::intersect_result_type the_intersect_result;
+					raytracing_traits::intersect_result_type the_intersect_result{ .primitive = nullptr };
 					raytracing_traits::arguments_type the_arguments{ .random = Xi };
 #if 1
 					try
@@ -710,8 +751,11 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 							std::cout << "debug";
 						}*/
 					//the_interact_result.push(objects.back().get(),1.0f);
-					for (size_t i = 0; i != 8; ++i) {
+					for (size_t i = 0; i != 12; ++i) {
 						///intersect_surface_and_emissive
+						the_intersect_result.prev_object    = the_intersect_result.object;
+						the_intersect_result.prev_primitive = the_intersect_result.primitive;
+						the_intersect_result.prev_element   = the_intersect_result.element;
 						the_intersect_result.distance  = std::numeric_limits<scalar>::max();
 						the_intersect_result.primitive = nullptr;
 						the_intersect_result.object    = nullptr;
@@ -764,7 +808,7 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 										const auto ray_in_obj = math::geometry::ray<vector3>::from_ray(
 											transformation.invtransform(ray.start_point()), 
 											transformation.invtransform_without_translation(ray.direction()));
-										if (primitive->enter(ray_in_obj, the_arguments, the_intersect_result)) {
+										if (primitive->enter(ray_in_obj, the_arguments, the_intersect_result, reinterpret_cast<const void*>(primitive_i.node) == the_intersect_result.prev_object)) {
 											the_intersect_result.object = reinterpret_cast<const void*>(primitive_i.node);
 										}
 									}
@@ -888,8 +932,38 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 				} else {
 					finresult_i = result_i/max(it.sample_index,size_t(1));
 				}
-				if (xi < this->prev_mouse_pos.x) {
+				/*if (xi < this->prev_mouse_pos.x) {
 					finresult_i /= finresult_i + 1;
+				}*/
+			});
+
+			/// exposure levels
+			/// exp(-3)<, exp(-2), exp(-1), exp(0), exp(1), exp(2), exp(3)<
+			math::smdarray<std::atomic_size_t, 3*2+1> histogram = {0,0,0,0,0,0,0};
+			concurrency::parallel_for(size_t(0), (finresult.length()+127)/128, 
+				[&,this](size_t i) {
+					decltype(histogram) histogram_i = {0,0,0,0,0,0,0};
+					for (size_t k = i*128, kend = min(k+128, finresult.length()); k != kend; ++k) {
+						auto luma = dot(finresult[k], tonemap.weights);
+						auto exposure = log2(luma);
+						int exposure_index = clamp(int(exposure) + 3, 0, 6);
+						++histogram_i[exposure_index];
+					}
+				
+					histogram += histogram_i;
+				}
+			);
+			size_t tone = 1;
+			for (size_t i = 1; i != 6; ++i) 
+				if (histogram[i-1] + histogram[i] + histogram[i+1] > histogram[tone-1] + histogram[tone] + histogram[tone+1]) 
+					tone = i;
+
+			this->tonemap = tonemapper<spectrum>(tonemap.contrast, tonemap.shoulderContrast, exposure-float(+int(tone)-3)/* -max(-1.0f,(std::get<1>(histogram[tone0-1])+std::get<1>(histogram[tone0])+std::get<1>(histogram[tone0+1]))
+				/(std::get<0>(histogram[tone0-1])+std::get<0>(histogram[tone0])+std::get<0>(histogram[tone0+1])))*/, 1, tonemap.weights);
+			std::for_each(std::execution::par, finresult.begin(), finresult.end(), [this](spectrum& color) {
+				color = pow(tonemap(color),/*0.45f*/1.0f);
+				for (size_t i = 0; i != 3; ++i) {
+					color[i] = isnan(color[i]) ? 0.0f : color[i];
 				}
 			});
 
@@ -965,75 +1039,56 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 		}
 	}
 
+	virtual void process_exit_sizemove_message(const wex::message& msg, wex::message_queue& sender) override {
+		size_t width, height;
+		std::tie(width,height) = base::window().get_clientsize();
+		finresult.resize(mdsize_t<2>{ width, height });
+		result.resize(mdsize_t<2>{ width, height });
+
+		scalar aspect = scalar(width)/scalar(height);
+		scalar fov_v = scalar(1.047);
+		scalar hh = tan(fov_v/2);
+		scalar wh = hh * aspect;
+		scalar fov_h = atan(wh)*2;
+		proj = decltype(proj)(fov_h, fov_v);
+
+		it.restart();
+	}
+
 	virtual void process_keyboard_message(const wex::message& msg, wex::message_queue& sender) override {
 		base::process_keyboard_message(msg, sender);
 
 		if (msg.message == WM_KEYDOWN) {
 			switch (msg.wParam) {
-			case '1': 
-				std::dynamic_pointer_cast< math::physics::raytracing::dielectric<raytracing_traits> >(materials["Ice"])->roughness += 0.1f;
-				std::cout << std::dynamic_pointer_cast< math::physics::raytracing::dielectric<raytracing_traits> >(materials["Ice"])->roughness << std::endl;
-				it.restart();
+			case 'e': case 'E':
+				exposure += 1;
+				exposure = clamp(exposure, -10.0f, 10.0f);
+				std::cout << "Exposure: " << exposure << std::endl;
 				break;
-			case '2':
-				std::dynamic_pointer_cast< math::physics::raytracing::dielectric<raytracing_traits> >(materials["Ice"])->roughness -= 0.1f;
-				std::cout << std::dynamic_pointer_cast< math::physics::raytracing::dielectric<raytracing_traits> >(materials["Ice"])->roughness << std::endl;
-				it.restart();
+			case 'r': case 'R':
+				exposure -= 1;
+				exposure = clamp(exposure, -10.0f, 10.0f);
+				std::cout << "Exposure: " << exposure << std::endl;
 				break;
-			case 'W': case 'w':
-				selected->geom2world.translate({0,0,1});
-				scene.build_bvh();
-				it.restart();
+			case 'a': case 'A':
+				tonemap.contrast += 0.1f;
+				tonemap.contrast = clamp(tonemap.contrast, 1.0f, 2.0f);
+				std::cout << "tonemap.contrast: " << tonemap.contrast << std::endl;
 				break;
-			case 'S': case 's':
-				selected->geom2world.translate({0,0,-1});
-				scene.build_bvh();
-				it.restart();
+			case 's': case 'S':
+				tonemap.contrast -= 0.1f;
+				tonemap.contrast = clamp(tonemap.contrast, 1.0f, 2.0f);
+				std::cout << "tonemap.contrast: " << tonemap.contrast << std::endl;
 				break;
-			case 'A': case 'a':
-				selected->geom2world.translate({-1,0,0});
-				scene.build_bvh();
-				it.restart();
+			case 'c': case 'C':
+				tonemap.shoulderContrast += 0.1f;
+				tonemap.shoulderContrast = clamp(tonemap.shoulderContrast, 0.0f, 1.0f);
+				std::cout << "tonemap.shoulderContrast: " << tonemap.shoulderContrast << std::endl;
 				break;
-			case 'D': case 'd':
-				selected->geom2world.translate({1,0,0});
-				scene.build_bvh();
-				it.restart();
-				break;
-			case 'E': case 'e':
-				selected->geom2world.translate({0,1,0});
-				scene.build_bvh();
-				it.restart();
-				break;
-			case 'F': case 'f': 
-				selected->geom2world.translate({0,-1,0});
-				scene.build_bvh();
-				it.restart();
-				break;
-			case 'R': case 'r':
-				selected->geom2world.rotate((vector3{1,0,0}), 0.05f);
-				scene.build_bvh();
-				it.restart();
-				break;
-			case 'T': case 't':
-				selected->geom2world.rotate((vector3{0,1,0}), 0.05f);
-				scene.build_bvh();
-				it.restart();
-				break;
-			case 'Y': case 'y':
-				selected->geom2world.rotate((vector3{0,0,1}), 0.05f);
-				scene.build_bvh();
-				it.restart();
-				break;
-			case 'G': case 'g':
-				selected->geom2world.scale({1.2f,1.2f,1.2f});
-				scene.build_bvh();
-				it.restart();
-				break;
-			case 'H': case 'h':
-				selected->geom2world.scale({1/1.2f,1/1.2f,1/1.2f});
-				scene.build_bvh();
-				it.restart();
+			case 'v': case 'V':
+				tonemap.shoulderContrast -= 0.1f;
+				tonemap.shoulderContrast = clamp(tonemap.shoulderContrast, 0.0f, 1.0f);
+				std::cout << "tonemap.shoulderContrast: " << tonemap.shoulderContrast << std::endl;
 				break;
 			default:
 				break;
@@ -1059,6 +1114,55 @@ struct APPLICATION : wex::mainwindow<wex::window_opengl> {
 	math::physics::raytracing::scene< math::physics::raytracing::primitive<raytracing_traits> > scene;
 	decltype(scene)::node_type* selected{nullptr};
 	vector3 pivot = {0,0,0};
+
+	template<typename spectrum, typename scalar = math::value_t<spectrum>>
+	struct tonemapper {
+		scalar contrast;
+		scalar shoulderContrast;
+		scalar shoulderScale;
+		scalar shoulderBias;
+		spectrum weights;
+	
+		explicit tonemapper(scalar contrast = 1, scalar shoulderContrast = 1, scalar exposure = 0, scalar hdrMax = 1, spectrum weights = {})
+			: contrast(contrast), shoulderContrast(shoulderContrast), weights(weights) {
+			scalar midIn = hdrMax*scalar(0.18) * exp2(-exposure);
+			scalar midOut = scalar(0.18);
+
+			scalar cs=contrast*shoulderContrast;
+			scalar z0=-pow(midIn,contrast);
+			scalar z1=pow(hdrMax,cs)*pow(midIn,contrast);
+			scalar z2=pow(hdrMax,contrast)*pow(midIn,cs)*midOut;
+			scalar z3=pow(hdrMax,cs)*midOut;
+			scalar z4=pow(midIn,cs)*midOut;
+			shoulderScale=-((z0+(midOut*(z1-z2))/(z3-z4))/(z4));
+
+			scalar w0=pow(hdrMax,cs)*pow(midIn,contrast);
+			scalar w1=pow(hdrMax,contrast)*pow(midIn,cs)*midOut;
+			scalar w2=pow(hdrMax,cs)*midOut;
+			scalar w3=pow(midIn,cs)*midOut;
+			shoulderBias=(w0-w1)/(w2-w3);
+		}
+
+		scalar operator()(const scalar& luma) const {
+			scalar luma2 = pow(luma, contrast);
+				luma2 /= (pow(luma2,shoulderContrast)*shoulderScale + shoulderBias);
+			return luma2;
+		}
+
+		spectrum operator()(const spectrum& color) const {
+			scalar luma = dot(color, weights);
+			scalar luma2 = pow(luma, contrast);
+				luma2 /= (pow(luma2,shoulderContrast)*shoulderScale + shoulderBias);
+
+			//return color * (luma2/luma);
+			spectrum ratio = color/max(max(color[0],color[1]),color[2]);
+			scalar lumaRatio = dot(ratio, weights);
+			spectrum color2 = ratio*(luma2/lumaRatio);
+			return color2;
+		}
+	};
+	tonemapper<spectrum> tonemap;
+	scalar exposure = 0;
 };
 
 #include <math/integral.hpp>
