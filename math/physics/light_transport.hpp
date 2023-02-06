@@ -302,20 +302,51 @@ namespace math { namespace physics {
 				TBN.tangent0() * (cos(azimuth) * sin_elevation) +
 				TBN.tangent1() * (sin(azimuth) * sin_elevation);
 			L = normalize(L);
-			if (dot(L, TBN.normal()) < 0) {
-				std::cout << "ssssss" << std::endl;
-				std::cout << TBN.check() << std::endl;
-				std::cout << "TBN = {" << TBN.normal() << "," << TBN.tangent0() << "," << TBN.tangent1() << "}" << std::endl;
-				std::cout << "azimuth = " << azimuth << std::endl;
-				std::cout << "cos_elevation = " << cos_elevation << std::endl;
-				std::cout << "sin_elevation = " << sin_elevation << std::endl;
-				throw std::exception();
-				//int a = 6;
-			}
 			assert( dot(L, TBN.normal()) >= 0 );
 
 			return (1-F)/(1-ff) * Pss;
 		}
+	}
+
+	template<typename vector3, typename spectrum = vector3>
+	struct translucent_bsdf {
+		spectrum color;
+	};
+
+	template<typename vector3, typename basis3, typename spectrum>
+	spectrum transmission(const vector3& V, const vector3& L, const basis3& TBN, 
+		const spectrum& etaI, const translucent_bsdf<vector3,spectrum>& mtl) {
+		using scalar = std::remove_cvref_t<decltype(std::declval<vector3>()[0])>;
+		scalar cos_N_V = dot(TBN.normal(), V);
+		if (cos_N_V <= 0) { return math::ones<spectrum>(0); }
+		scalar cos_N_L = dot(TBN.normal(), L);
+		if (cos_N_L >= 0) { return math::ones<spectrum>(0); }
+
+		return mtl.color * (-cos_N_L/std::numbers::pi_v<scalar>);
+	}
+
+	template<typename vector2, typename vector3, typename basis3, typename spectrum>
+	spectrum transport(const vector2& Xi, const vector3& V, vector3& L, const basis3& TBN, 
+		const spectrum& etaI, const translucent_bsdf<vector3,spectrum>& mtl) {
+		using scalar = std::remove_cvref_t<decltype(std::declval<vector3>()[0])>;
+		scalar cos_N_V = dot(TBN.normal(), V);
+		if (cos_N_V <= 0) { return math::ones<spectrum>(0); }
+
+		scalar cos_elevation = sqrt(1 - Xi[0]);
+		scalar sin_elevation = sqrt(1 - cos_elevation*cos_elevation);
+		scalar azimuth = Xi[1] * std::numbers::pi_v<scalar>*2;
+		L = TBN.normal() * cos_elevation +
+			TBN.tangent0() * (cos(azimuth) * sin_elevation) +
+			TBN.tangent1() * (sin(azimuth) * sin_elevation);
+		assert( dot(L, TBN.normal()) >= 0 );
+		L = -L;
+
+		/// BSDF = color/pi
+		/// PDF = cos(N,L)/pi
+		///                      color/pi
+		/// BSDF/PDF*cos(N,L) = ------------- * cos(N,L)
+		///                      cos(N,L)/pi
+		return mtl.color;
 	}
 
 /// Lightpath reflects until it nohit.
@@ -557,7 +588,7 @@ namespace raytracing {
 /// And (3) the "enter" can be optimized. (4) The new collision detection does not need to offset
 /// (without unclosed geometry).
 
-		virtual bool enter(const ray_type&, const arguments_type&, intersect_result_type&) const = 0;
+		virtual bool enter(const ray_type&, const arguments_type&, intersect_result_type&, bool is_self/*for avoid self-intersects*/) const = 0;
 
 		virtual void exit(const ray_type&, const arguments_type&, intersect_result_type&) const = 0;
 
@@ -673,7 +704,7 @@ namespace raytracing {
 
 		bool invert = false;
 
-		virtual bool enter( const ray_type& ray, const arguments_type&, intersect_result_type& result ) const override {
+		virtual bool enter( const ray_type& ray, const arguments_type&, intersect_result_type& result, bool is_self ) const override {
 			auto section = math::geometry::intersection(static_cast<const shape&>(*this), ray);
 			if constexpr (std::is_same_v<decltype(section), range<scalar>>) 
 			{
@@ -1034,6 +1065,13 @@ namespace raytracing {
 						boundary = expand(boundary, bounds<vector3>::from(as<vector3>(p0), as<vector3>(p1), as<vector3>(p2)));
 					}
 
+					for (size_t i = 0; i != 3; ++i) {
+						if (boundary.l[i] == boundary.u[i]) {
+							boundary.l[i] -= 1e-6f;
+							boundary.u[i] += 1e-6f;
+						}
+					}
+
 					return boundary;
 				},
 				[this](auto first, auto last, const bounds<vector3>& boundary) {
@@ -1051,12 +1089,17 @@ namespace raytracing {
 			);
 		}
 
-		virtual bool enter( const ray_type& ray, const arguments_type&, intersect_result_type& result ) const override {
+		virtual bool enter( const ray_type& ray, const arguments_type&, intersect_result_type& result, bool is_self ) const override {
 			typename decltype(bvh)::vertex_descriptor node = 0;
 			while (node != bvh.null_vertex()) {
 				bool can_skip = before(result.distance, intersection(bvh[node].first, ray));
 				if (!can_skip && bvh.vertex(node).is_leaf()) {
 					for (const auto& indices : bvh[node].second) {
+						if (is_self && result.prev_primitive == this && result.prev_element == (&indices) - (&elements[0])) {
+							//avoid self-intersection for doubleSided triangles.
+							//(and another process in material when ray parallel the triangle.)
+							continue;
+						}
 						attribute_type p0 = get_position(indices[0]), p1 = get_position(indices[1]), p2 = get_position(indices[2]);
 						auto element_i = triangle<vector3>::from_points(as<vector3>(p0), as<vector3>(p1), as<vector3>(p2));
 						if (this->material->doublesided || dot(ray.direction(), cross(element_i.ori.e[0], element_i.ori.e[1])) < 0) {
@@ -1247,6 +1290,7 @@ namespace raytracing {
 					return math::ones<spectrum>(1);
 				}
 
+				result.ray = ray;
 				return this->material->get_transmittance(ray, therange, result);
 			}
 		}
@@ -1512,7 +1556,13 @@ namespace raytracing {
 		vector3 roughness_factor;
 		size_t metallic_and_roughness_texture_index = 0;
 
-		mutable std::vector<attribute_type> attributes{ 4, attribute_type{} };//temporay.
+		math::samplable_array<
+			math::mdarray<spectrum,mdsize_t<2>>, vector2> emissive_texture;
+		spectrum emissive_factor;
+		size_t emissive_texture_index = 0;
+
+		bool translucent = false;
+		translucent_bsdf<vector3, spectrum> translucent_mtl = { spectrum{0.277955f,0.064603f,0.104813f} };
 
 		virtual void interact_boundary( ray_type& ray, const arguments_type& arguments, const intersect_result_type& intersection, interact_result_type& result ) const override {
 			attribute_type attributes[4+4];
@@ -1528,12 +1578,16 @@ namespace raytracing {
 			if (!color.empty()) {
 				const auto& x = reinterpret_cast<const vector2&>(attributes[4 + color_texture_index]);
 				auto c = math::tex_sample(color, x/*vector2{x[0],1-x[1]}*/) * color_factor;
-				if (c[3] < 0.2) {
-					ray.set_start_point(position + ray.direction()*1e-4f);
+				if (!this->opaque && arguments.random[0] >= c[3]) {
+					ray.set_start_point(position);
 					return;
 				}
 				mtl.color = reinterpret_cast<const spectrum&>(c);
 			} else {
+				if (!this->opaque && arguments.random[0] >= color_factor[3]) {
+					ray.set_start_point(position);
+					return;
+				}
 				mtl.color = reinterpret_cast<const spectrum&>(color_factor);
 			}
 
@@ -1547,35 +1601,56 @@ namespace raytracing {
 				mtl.roughness = roughness_factor;
 			}
 
-			vector3 V = (-ray.direction());
-			vector3 L;
-			if (result.incident_radiance != 0) 
-				result.radiance += math::physics::transmission(V, -result.incident_ray.direction(), basis, etaI, mtl) * result.incident_radiance * result.transmittance;
-			result.transmittance *= math::physics::transport(arguments.random, V, /*std::ref*/(L), basis, etaI, mtl);
-			if (result.transmittance != 0) {
-				ray.set_direction(L);
-				ray.set_start_point(position/* + ray.direction()*1e-4f*/);
-				if (this->doublesided) {
-					ray.s += L*1e-4f;
+			spectrum emissive;
+			if (!emissive_texture.empty()) {
+				const auto& x = reinterpret_cast<const vector2&>(attributes[4 + emissive_texture_index]);
+				emissive = math::tex_sample(emissive_texture, x) * emissive_factor;
+			} else {
+				emissive = emissive_factor;
+			}
+
+			if (translucent) {
+				vector3 V = (-ray.direction());
+				vector3 L;
+				if (result.incident_radiance != 0) 
+					result.radiance += (math::physics::transmission(V, -result.incident_ray.direction(), basis, etaI, mtl)
+						+ math::physics::transmission(V, -result.incident_ray.direction(), basis, etaI, translucent_mtl)) * result.incident_radiance * result.transmittance;
+				result.radiance += emissive * result.transmittance;
+				if (arguments.random[1] < 0.5) {
+					result.transmittance *= min(scalar(1), math::physics::transport(arguments.random, V, /*std::ref*/(L), basis, etaI, mtl) * 2);
+				} else {
+					result.transmittance *= min(scalar(1), math::physics::transport(arguments.random, V, /*std::ref*/(L), basis, etaI, translucent_mtl) * 2);
+				}
+				if (result.transmittance != 0) {
+					ray.set_direction(L);
+					ray.set_start_point(position);
+				}
+			} else {
+				vector3 V = (-ray.direction());
+				vector3 L;
+				if (result.incident_radiance != 0) 
+					result.radiance += min( math::physics::transmission(V, -result.incident_ray.direction(), basis, etaI, mtl), scalar(1)) * result.incident_radiance * result.transmittance;
+				result.radiance += emissive * result.transmittance;
+				result.transmittance *= min( math::physics::transport(arguments.random, V, /*std::ref*/(L), basis, etaI, mtl), scalar(1) );
+				if (result.transmittance != 0) {
+					ray.set_direction(L);
+					ray.set_start_point(position);
 				}
 			}
 		}
 	
 		virtual spectrum get_transmittance(const ray_type& ray, const range<scalar>& therange, const intersect_result_type& intersection) const { 
-			attribute_type attributes[1+4];
+			attribute_type attributes[2+4];
 			intersection.primitive->get_attributes(intersection, 0, color.empty()&&metallic_and_roughness.empty() ? 0 : (max(color_texture_index, metallic_and_roughness_texture_index) + 1), 0, attributes);
 			//const vector3& position = reinterpret_cast<const vector3&>(attributes[0]);
 			//const spectrum etaI     = {result.enter_ior(),result.enter_ior(),result.enter_ior()};
 			
 			if (!color.empty()) {
 				const auto& x = reinterpret_cast<const vector2&>(attributes[4 + color_texture_index]);
-				auto c = math::tex_sample(color, x/*vector2{x[0],1-x[1]}*/) * color_factor;
-				if (c[3] < 0.2) {
-					return math::ones<spectrum>(0);
-				}
-				return math::ones<spectrum>(c[3]);
+				auto c = math::tex_sample(color, x) * color_factor;
+				return math::ones<spectrum>(1 - c[3]);
 			} else {
-				return math::ones<spectrum>(color_factor[3]);
+				return math::ones<spectrum>(1 - color_factor[3]);
 			}
 		}
 	};
@@ -1688,7 +1763,7 @@ namespace raytracing {
 			result.incident_distance = length;
 			result.incident_radiance = color*(intensity/(length*length));
 #else
-			scalar radius = 0.5f;
+			scalar radius = 0.1f;
 			if (length < radius) {
 				result.incident_distance = 0;
 				result.incident_radiance = {0,0,0};
