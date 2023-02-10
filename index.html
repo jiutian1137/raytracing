@@ -1,0 +1,20 @@
+<html>
+<head> <title>raytracing</title> </head>
+<body>
+	<h1>Raytracing <small>very simple<small></h1>
+	<p>a ray intersect scene, the ray interact with hited object, loop ... <p>
+
+	<h1>For scattering <small>we divide a object by interior and boundary<small></h1>
+	<p>a ray enter/exit_intersect scene, the ray interact with interior/boundary of hited object, loop ... </p>
+
+	<h1>Unbiased intersection</h1>
+	<p>Forward: intersection(self) < intersection(hited_object) </p>
+	<p>No-Cycles: 0 < intersection(hited_object) </p>
+	<p> max(intersection(self), 0) < intersection(hited_object) </p>
+
+	<h1><strong><a href="https://github.com/jiutian1137/raytracing">Source Code</a></strong></h1>
+
+	<p><iframe src="raytracing result0.html" width="1024" height="1024" title="result0"></iframe></p>
+	<p><iframe src="raytracing result1.html" width="1024" height="1024" title="result1"></iframe></p>
+</body>
+</html>
