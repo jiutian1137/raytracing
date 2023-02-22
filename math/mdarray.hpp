@@ -1065,6 +1065,20 @@ namespace math {
 		return { select(index)... };
 	}
 
+	template<typename value, auto size, typename package>
+	constexpr void load(const value* x, smdarray<value,size,package>& y) {
+		for (size_t i = 0, iend = static_cast<size_t>(size); i != iend; ++i) {
+			y[i] = x[i];
+		}
+	}
+
+	template<typename value, auto size, typename package>
+	constexpr void store(value* y, const smdarray<value,size,package>& x) {
+		for (size_t i = 0, iend = static_cast<size_t>(size); i != iend; ++i) {
+			y[i] = x[i];
+		}
+	}
+
 #if 0
 	template<auto mdindex, typename value, auto size, typename package>
 		requires static_mdarray<smdarray_view<value, size, package>>

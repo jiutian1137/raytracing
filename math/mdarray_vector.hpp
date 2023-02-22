@@ -895,10 +895,10 @@ namespace math {
 		}
 	}
 
-#if 0
+#if 1 //or use concept::static_vector_cast<...>(...)
 	template<typename dst_array, auto size>
-		requires (smdarray<float, size, __m128>::length() <= 4 &&  std::same_as<value_t<dst_array>, int>)
-	constexpr dst_array static_vector_cast(const smdarray<float, size, __m128>& src) {
+		requires (smdarray<float, size, __m128>::length() <= 4 &&  std::same_as<std::remove_cvref_t<decltype(std::declval<dst_array>()[size_t()])>, int>)
+	constexpr dst_array convert(const smdarray<float, size, __m128>& src) {
 		if constexpr (math::uses_package_v<dst_array, __m128i>) {
 			return { _mm_cvtps_epi32(src.__data[0]) };
 		} else {
@@ -916,8 +916,8 @@ namespace math {
 	}
 
 	template<typename dst_array, auto size>
-		requires (smdarray<float, size, __m128>::length() <= 4 &&  std::same_as<value_t<dst_array>, double>)
-	constexpr dst_array static_vector_cast(const smdarray<float, size, __m128>& src) {
+		requires (smdarray<float, size, __m128>::length() <= 4 &&  std::same_as<std::remove_cvref_t<decltype(std::declval<dst_array>()[size_t()])>, double>)
+	constexpr dst_array convert(const smdarray<float, size, __m128>& src) {
 		if constexpr (math::uses_package_v<dst_array, __m256d>) {
 			return { _mm256_cvtps_pd(src.__data[0]) };
 		} else {
@@ -932,6 +932,18 @@ namespace math {
 				return { tmp.m256d_f64[0], tmp.m256d_f64[1], tmp.m256d_f64[2], tmp.m256d_f64[3] };
 			}
 		}
+	}
+
+	template<auto size>
+		requires (smdarray<float, size, __m128>::length() == 4)
+	constexpr void load(const float* x, smdarray<float, size, __m128>& y) {
+		y.__data[0] = _mm_loadu_ps(x);
+	}
+
+	template<auto size>
+		requires (smdarray<float, size, __m128>::length() == 4)
+	constexpr void store(float* y, const smdarray<float, size, __m128>& x) {
+		_mm_storeu_ps(y, x.__data[0]);
 	}
 #endif
 
