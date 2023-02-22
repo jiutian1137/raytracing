@@ -8,10 +8,11 @@
 
 #include <math/concepts.hpp>
 #include <cassert>
-#ifndef _REMOVE_TO_STRING
-#include <string>
-#include <format>
-#include <iosfwd>
+#include <array>
+#ifndef _MATH_CONCEPTS_
+namespace math { 
+	template<typename _Ty>
+	using value_t = typename std::iterator_traits<decltype(std::begin(std::declval<_Ty>()))>::value_type; }
 #endif
 
 #include <geometry/range.hpp>
@@ -104,38 +105,6 @@ namespace math { namespace geometry {
 
 /// linear shape.
 
-	template<typename __vector3>
-	struct ray {
-		using vector3 = __vector3;
-		using scalar = std::remove_cvref_t<decltype(vector3{}[size_t()])>;
-		vector3 s;
-		vector3 d;
-		vector3 invd;
-		
-		static ray from_ray(const vector3& start_point, const vector3& direction) {
-			return ray{start_point, direction, 1/(copysign(max(abs(direction), std::numeric_limits<scalar>::min()), direction))};
-		}
-		static ray from_segment(const vector3& start_point, const vector3& end_point) {
-			return from_ray(start_point, normalize(end_point - start_point));
-		}
-
-		constexpr vector3& start_point() { return s; }
-		constexpr const vector3& start_point() const { return s; }
-		
-		constexpr vector3& direction() { return d; }
-		constexpr const vector3& direction() const { return d; }
-
-		constexpr vector3& inverse_direction() { return invd; }
-		constexpr const vector3& inverse_direction() const { return invd; }
-
-		void set_start_point(const vector3& s) { this->s = s; }
-		void set_direction(const vector3& d) { this->d = d; 
-			this->invd = 1/(copysign(max(abs(d), std::numeric_limits<scalar>::min()), d));
-		}
-
-		constexpr vector3 operator()(const scalar& t) const { return s + d * t; }
-	};
-
 #if 0
 	template<typename vector3>
 	struct raybeam : ray<vector3> {
@@ -167,25 +136,73 @@ namespace math { namespace geometry {
 		}
 	};
 #endif
-
-	template<typename __vector3>
-	struct plane { using vector3 = __vector3;
-		using scalar = std::remove_cvref_t<decltype(vector3{}[size_t()])>;
-		vector3 n;
-		scalar d;
-///@note what difference between "dot(p-0,n) = d" and "dot(p-0,n)+d=0" ? 
-/// "dot(p-0,n) = d" means signed distance from '0' to 'p'.(named Plane, it aligns coordinate axis. @see transform.hpp)
-/// "dot(p-0,n)+d=0" means signed distance from 'p' to '0'.(named Equation. @see aeq.hpp)
+	
+	template<typename __vectorN>
+	struct ray {
+		using vector = __vectorN;
+		using scalar = value_t<__vectorN>;
+		vector s;
+		vector d;
+		vector invd;
 		
-		vector3& normal() { return n; }
-		const vector3& normal() const { return n; }
+		constexpr const vector& position() const { return s; }
+		
+		constexpr const vector& direction() const { return d; }
 
-		scalar& distance() { return d; }
-		const scalar& distance() const { return d; }
+		constexpr const vector& inversed_direction() const { return invd; }
+
+		constexpr vector operator()(const scalar t) const { return s + d * t; }
+
+		constexpr ray() = default;
+
+		constexpr ray(const vector& p, const vector& d)
+			: s(p), d(d), invd(copysign(1/max(abs(d), std::numeric_limits<scalar>::min()), d)) {}
+
+		static constexpr ray from_segment(const vector& p0, const vector& p1) {
+			return ray{p0, normalize(p1 - p0)};
+		}
+
+		void reposit(const vector& p1) {
+			s = p1;
+		}
+
+		void redirect(const vector& d1) {
+			d = d1;
+			invd = copysign(1/max(abs(d1), std::numeric_limits<scalar>::min()), d1);
+		}
+	};
+
+	template<typename __vectorN>
+	struct plane {
+		using vector = __vectorN;
+		using scalar = value_t<__vectorN>;
+		///@note what difference between "dot(p-0,n) = d" and "dot(p-0,n)+d=0" ? 
+		/// "dot(p-0,n) = d" means signed distance from '0' to 'p', named Plane, it aligns coordinate axis. @see transform.hpp.
+		/// "dot(p-0,n)+d=0" means signed distance from 'p' to '0', named Equation. @see aeq.hpp.
+		vector n;
+		scalar d;
+		
+		constexpr const vector& normal() const { return n; }
+
+		constexpr const vector& distance() const { return d; }
+
+		static constexpr plane from_triangle(const vector& p, const vector& e01, const vector& e02) {
+			plane pln;
+			pln.n = cross(e01, e02);
+			pln.d = dot(p, pln.n);
+			return pln;
+		}
+
+		static constexpr plane from_points(const vector& p0, const vector& p1, const vector& p2) {
+			plane pln;
+			pln.n = cross(p1-p0,p2-p0);
+			pln.d = dot(p0, pln.n);
+			return pln;
+		}
 	};
 	
-	template<typename vector3>
-	auto intersection(const plane<vector3>& pln, const ray<vector3>& ray) {
+	template<typename vectorN>
+	auto intersection(const plane<vectorN>& pln, const ray<vectorN>& ray) {
 ///  -+------------------------+
 ///  /*c                      /pln
 /// /        *a     *b       /
@@ -210,56 +227,80 @@ namespace math { namespace geometry {
 ///		dot(r.s, pln.n) + dot(r.d, pln.n)*t = pln.d 
 ///		t = (pln.d - dot(r.s, pln.n))/dot(r.d, pln.n) 
 /// 
-		auto dx   = pln.d - dot(ray.s, pln.n);
+#if 0
+		return (pln.d - dot(ray.s, pln.n))/dot(ray.d, pln.n);///may NaN if 'ray' on the 'pln'.
+#else
+		auto dx = pln.d - dot(ray.s, pln.n);
+		if (dx == 0) { return 0; }
 		auto dxdt = dot(ray.d, pln.n);
-		return (dx==0&&dxdt==0 ? 0 : dx/dxdt);
+		return dx/dxdt;
+#endif
 	}
 
 
-	template<typename __vector3>
-	struct origin_triangle { using vector3 = __vector3;
-		vector3 e[2];///triangle::edges.
+	template<typename vectorN>
+	struct origin_triangle {
+		vectorN e[2];
 	};
 
-	template<typename __vector3>
-	struct triangle { using vector3 = __vector3;
-		vector3 p;///triangle::pivot.
-		origin_triangle<vector3> ori;
+	template<typename __vectorN>
+	struct triangle {
+		using vector = __vectorN;
+		using scalar = value_t<__vectorN>;
+		vector p;
+		origin_triangle<vector> base;
 
-		static triangle from_points(const vector3& p0, const vector3& p1, const vector3& p2) {
-			return triangle{p0, p1 - p0, p2 - p0};
+		constexpr const vector& pivot() const { return p; }
+
+		constexpr const vector& edge(size_t i) const { return base.e[i]; }
+
+		constexpr const vector point(size_t i) const { return i == 0 ? p : i == 1 ? (p + base.e[0]) : (p + base.e[1]); };
+
+		template<typename vector2>
+		constexpr vector operator()(const vector2& u) const { return p + base.e[0]*u[0] + base.e[1]*u[1]; }
+
+		static triangle from_points(const vector& p0, const vector& p1, const vector& p2) {
+			return {p0, p1-p0, p2-p0};
+			///order not change.
+			///		tri.p2 + (tri.p0 - tri.p2)*u + (tri.p1 - tri.p2)*v = X
+			///		tri.p((2+1)%3) + (tri.p((0+1)%3) - tri.p((2+1)%3))*u + (tri.p((1+1)%3) - tri.p((2+1)%3))*v = X
+			///		tri.p0 + (tri.p1 - tri.p0)*u + (tri.p2 - tri.p0)*v = X    
 		}
-		static triangle from_triangle(const vector3& p0, const vector3& e0, const vector3& e1) {
-			return triangle{p0, e0, e1};
+
+		template<typename vector2>
+		static vector lerp_from_points(const vector& p0, const vector& p1, const vector& p2, const vector2& u) {
+			return p0 + (p1 - p0)*u[0] + (p2 - p0)*u[1];
 		}
 	};
 
-	template<typename vector3>
-	auto ray_intersection(const origin_triangle<vector3>& tri, const vector3& raySp, const vector3& rayDr) {
-/// tri.p --- * --> tri.e[0]
-///  \      /
+	template<typename vectorN>
+	auto intersection(const origin_triangle<vectorN>& tri, const vectorN raySp, const vectorN& rayDr) {
+/// tri.p --- * --> tri.e0
+///  \      / 
 ///   \    /
 ///    \  /
-///     *
+///     * 
 ///      \
-///      _\| tri.e[1]
+///      _\| tri.e1
 /// 
 /// A triangle is sandwiched between two edges'tri.e' that have a unique intersection
 /// pivot'tri.p = 0.0'.
 /// 
-///		0.0 + tri.e[0]*u + tri.e[1]*v = X 
+///		tri.p0*u + tri.p1*v + tri.p2*(1 - u - v) = X
+///		tri.p2 + (tri.p0 - tri.p2)*u + (tri.p1 - tri.p2)*v = X
+///		0.0 + tri.e0*u + tri.e1*v = X 
 /// 
 /// Therefore, we can express intersection of ray'ray.s + ray.d*t' and triangle as,
 /// 
-///		tri.e[0]*u + tri.e[1]*v = ray.s + ray.d*t 
+///		tri.e0*u + tri.e1*v = ray.s + ray.d*t 
 /// 
 /// Solve it by Cramer's Rule, the first get the matrix equation,
 /// 
-///		tri.e[0]*u + tri.e[1]*v - ray.d*t = ray.s 
+///		tri.e0*u + tri.e1*v - ray.d*t = ray.s 
 /// 
-///		{ dot(tri.e[0]*u + tri.e[1]*v - ray.d*t, tri.e[0]) = dot(ray.s, tri.e[0]),
-///		  dot(tri.e[0]*u + tri.e[1]*v - ray.d*t, tri.e[1]) = dot(ray.s, tri.e[1]),
-///		  dot(tri.e[0]*u + tri.e[1]*v - ray.d*t, ray.d)  = dot(ray.s, ray.d)  }
+///		{ dot(tri.e0*u + tri.e1*v - ray.d*t, tri.e0) = dot(ray.s, tri.e0),
+///		  dot(tri.e0*u + tri.e1*v - ray.d*t, tri.e1) = dot(ray.s, tri.e1),
+///		  dot(tri.e0*u + tri.e1*v - ray.d*t, ray.d)  = dot(ray.s, ray.d)  }
 /// 
 ///		solve ... 
 /// 
@@ -271,12 +312,12 @@ namespace math { namespace geometry {
 ///		determinant(Matrix3x3) =
 ///		determinant(transpose(Matrix3x3)) = dot(column(Matrix3x3,0), cross(column(Matrix3x3,1), column(Matrix3x3,2))) 
 /// 
-		vector3 column0 = { dot(tri.e[0], tri.e[0]), dot(tri.e[0], tri.e[1]), dot(tri.e[0], rayDr)};
-		vector3 column1 = { dot(tri.e[1], tri.e[0]), dot(tri.e[1], tri.e[1]), dot(tri.e[1], rayDr)};
-		vector3 column2 = - vector3{ dot(rayDr, tri.e[0]), dot(rayDr, tri.e[1]), dot(rayDr, rayDr) };
+		vectorN column0 = { dot(tri.e[0], tri.e[0]), dot(tri.e[0], tri.e[1]), dot(tri.e[0], rayDr)};
+		vectorN column1 = { dot(tri.e[1], tri.e[0]), dot(tri.e[1], tri.e[1]), dot(tri.e[1], rayDr)};
+		vectorN column2 = - vectorN{ dot(rayDr, tri.e[0]), dot(rayDr, tri.e[1]), dot(rayDr, rayDr) };
 		auto determinant = dot(column0, cross(column1, column2));
 		if ( determinant != 0 ) {
-			vector3 column3 = { dot(raySp, tri.e[0]), dot(raySp, tri.e[1]), dot(raySp, rayDr) };
+			vectorN column3 = { dot(raySp, tri.e[0]), dot(raySp, tri.e[1]), dot(raySp, rayDr) };
 			auto u = dot(column3, cross(column1, column2))/determinant;
 			if ( 0 <= u && u <= 1 ) {
 				auto v = dot(column0, cross(column3, column2))/determinant;
@@ -301,8 +342,8 @@ namespace math { namespace geometry {
 		return std::numeric_limits<decltype(determinant)>::quiet_NaN();
 	}
 
-	template<typename vector3>
-	vector3 inside_relation(const origin_triangle<vector3>& tri, const vector3& X) {
+	template<typename vectorN>
+	auto intersection(const origin_triangle<vectorN>& tri, const vectorN X/* = raySp + rayDr*t */) {
 ///		0.0 + tri.e[0]*u + tri.e[1]*v = X 
 ///
 ///		{ dot(tri.e[0]*u + tri.e[1]*v, tri.e[0]) = dot(X, tri.e[0]),
@@ -315,83 +356,46 @@ namespace math { namespace geometry {
 		auto m21 = dot(   X,     tri.e[1]);
 		auto determinant = m00*m11 - m10*m01;
 		if (determinant == 0) { determinant = 1; }
-		auto u1 = (m20*m11 - m10*m21)/determinant;
-		auto u2 = (m00*m21 - m20*m01)/determinant;
-		return {1-u1-u2, u1, u2};
+		auto u0 = (m20*m11 - m10*m21)/determinant;
+		auto u1 = (m00*m21 - m20*m01)/determinant;
+		return std::array<value_t<vectorN>,2>{u0, u1};
 	}
 
-	template<typename vector3>
-	auto intersection(const triangle<vector3>& tri, const ray<vector3>& ray) {
-		return ray_intersection(tri.ori, ray.s - tri.p, ray.d);
+	template<typename vectorN>
+	auto intersection(const triangle<vectorN>& tri, const ray<vectorN>& ray) {
+		return intersection(tri.base, ray.s - tri.p, ray.d);
 	}
 
-	template<typename vector3>
-	auto inside_relation(const triangle<vector3>& tri, const vector3& X) {
-		return inside_relation(tri.ori, X - tri.p);
+	template<typename vectorN>
+	auto intersection(const triangle<vectorN>& tri, const vectorN& X) {
+		return intersection(tri.base, X - tri.p);
 	}
 
 
 	using ::geometry::range;
 
-	template<typename __vector3>
-	struct origin_box { using vector3 = __vector3;
-		vector3 r;
-
-		vector3& halfextents() { return r; }
-		const vector3& halfextents() const { return r; }
+	template<typename vectorN>
+	struct origin_box {
+		vectorN r;
 	};
 
-	template<typename __vector3>
-	struct box { using vector3 = __vector3;
-		vector3 c;
-		origin_box<vector3> ori;
+	template<typename __vectorN>
+	struct box {
+		using vector = __vectorN;
+		vector c;
+		origin_box<vector> base;
 
-		vector3& center() { return c; }
-		const vector3& center() const { return c; }
+		constexpr const vector& center() const { return c; }
 
-		vector3& halfextents() { return ori.r; }
-		const vector3& halfextents() const { return ori.r; }
+		constexpr const vector& halfextents() const { return base.r; }
 	};
 
-	template<typename vector3>
-	using bounds = ::geometry::range<vector3>;
-
-	template<typename vector3>
-	auto ray_intersection(const origin_box<vector3>& box, const vector3& raySp, const vector3& rayDrInv) {
-		using scalar = std::remove_cvref_t<decltype(std::declval<vector3>()[size_t()])>;
-		vector3 tmp = (-box.r - raySp)*rayDrInv;///@see intersect(ray, plane)
-		vector3 tB  = ( box.r - raySp)*rayDrInv;///@see intersect(ray, plane)
-		vector3 tF  = max(tmp, tB);///forward intersect results.
-		        tB  = min(tmp, tB);///backward intersect results.
-		scalar  t0  = max(max(tB[0], tB[1]), tB[2]);
-		scalar  t1  = min(min(tF[0], tF[1]), tF[2]);
-		if (t1 < t0) { return range<scalar>::empty_range(); }
-		return range<scalar>{t0, t1};
-//		if (t1 < tMin) { return -2; }
-//
-//#ifdef __calculation_shrink_intersections__
-//		if (t1 == tMin || t0 == t1) { t[0] = t1; return 1; }/// ray at box radius and lookout box || ray outside box and intersect tap.
-//#endif
-//		if (t0 < tMin) {
-//			if (isurf) { t[0] = t1; return 1; }
-//			else { 
-//			t[0] = tMin; t[1] = t1; return 2; }
-//		} else {
-//			t[0] = t0; t[1] = t1; return 2;
-//		}
-	}
-
-	template<typename vector3>
-	auto intersection(const box<vector3>& box, const ray<vector3>& ray) {
-		return ray_intersection(box.ori, ray.s - box.c, ray.invd);
-	}
-
-	template<typename vector3>
-	auto intersection(const bounds<vector3>& box, const ray<vector3> ray) {
-		using scalar = std::remove_cvref_t<decltype(std::declval<vector3>()[size_t()])>;
-		vector3 tmp = (box.l - ray.s)*ray.invd;///@see intersect(ray, plane)
-		vector3 tB  = (box.u - ray.s)*ray.invd;///@see intersect(ray, plane)
-		vector3 tF  = max(tmp, tB);///forward intersect results.
+	template<typename vectorN>
+	auto intersection(const origin_box<vectorN>& box, const vectorN& raySp, const vectorN& rayDrInv) {
+		using scalar = value_t<vectorN>;
+		vectorN tmp = (-box.r - raySp)*rayDrInv;///@see intersect(ray, plane)
+		vectorN tB  = ( box.r - raySp)*rayDrInv;///@see intersect(ray, plane)
+		vectorN tF  = max(tmp, tB);///forward intersect results.
 		        tB  = min(tmp, tB);///backward intersect results.
 		scalar  t0  = max(max(tB[0], tB[1]), tB[2]);
 		scalar  t1  = min(min(tF[0], tF[1]), tF[2]);
@@ -399,36 +403,45 @@ namespace math { namespace geometry {
 		return range<scalar>{t0, t1};
 	}
 
-	/*template<typename vector3>
-	auto expand(const bounds<vector3>& box0, const bounds<vector3>& box1) {
-		return { vmin(box0.l,box1.l), vmax(box0.u,box1.u) };
-	}*/
+	template<typename vectorN>
+	auto intersection(const box<vectorN>& box, const ray<vectorN>& ray) {
+		return intersection(box.ori, ray.s - box.c, ray.invd);
+	}
+
+	template<typename vectorN>
+	auto intersection(const range<vectorN>& box, const ray<vectorN> ray) {
+		using scalar = value_t<vectorN>;
+		vectorN tmp = (box.l - ray.s)*ray.invd;///@see intersect(ray, plane)
+		vectorN tB  = (box.u - ray.s)*ray.invd;///@see intersect(ray, plane)
+		vectorN tF  = max(tmp, tB);///forward intersect results.
+		        tB  = min(tmp, tB);///backward intersect results.
+		scalar  t0  = max(max(tB[0], tB[1]), tB[2]);
+		scalar  t1  = min(min(tF[0], tF[1]), tF[2]);
+		if (t1 < t0) { return range<scalar>::empty_range(); }
+		return range<scalar>{t0, t1};
+	}
 
 
-	template<typename __vector3>
-	struct origin_sphere { using vector3 = __vector3;
-		using scalar = std::remove_cvref_t<decltype(vector3{}[size_t()])>;
-		scalar r;
-
-		scalar& radius() { return r; }
-		const scalar& radius() const { return r; }
+	template<typename vectorN>
+	struct origin_sphere { 
+		value_t<vectorN> r;
 	};
 
-	template<typename __vector3>
-	struct sphere { using vector3 = __vector3;
-		vector3 c;
-		origin_sphere<vector3> ori;
+	template<typename __vectorN>
+	struct sphere {
+		using vector = __vectorN;
+		using scalar = value_t<__vectorN>;
+		vector c;
+		origin_sphere<vector> base;
 
-		vector3& center() { return c; }
-		const vector3& center() const { return c; }
+		constexpr const vector& center() const { return c; }
 
-		auto& radius() { return ori.r; }
-		const auto& radius() const { return ori.r; }
+		constexpr const auto& radius() const { return base.r; }
 	};
 
-	template<typename vector3>
-	auto ray_intersection(const origin_sphere<vector3>& sph, const vector3& raySp, const vector3& rayDr) {
-		using scalar = std::remove_cvref_t<decltype(std::declval<vector3>()[size_t()])>;
+	template<typename vectorN>
+	auto intersection(const origin_sphere<vectorN>& sph, const vectorN& raySp, const vectorN& rayDr) {
+		using scalar = value_t<vectorN>;
 		///             _ _
 		///         -         - 
 		///     .-               -.
@@ -482,9 +495,9 @@ namespace math { namespace geometry {
 		}
 	}
 
-	template<typename vector3>
-	auto intersection(const sphere<vector3>& sph, const ray<vector3>& ray) {
-		return ray_intersection(sph.ori, ray.s - sph.c, ray.d);
+	template<typename vectorN>
+	auto intersection(const sphere<vectorN>& sph, const ray<vectorN>& ray) {
+		return intersection(sph.ori, ray.s - sph.c, ray.d);
 	}
 
 #if 0
